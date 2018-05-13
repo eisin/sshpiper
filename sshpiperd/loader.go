@@ -8,4 +8,5 @@ import (
 	_ "github.com/tg123/sshpiper/sshpiperd/challenger/welcometext"
 
 	_ "github.com/tg123/sshpiper/sshpiperd/auditor/typescriptlogger"
+	_ "github.com/tg123/sshpiper/sshpiperd/auditor/externalfilterlogger"
 )
