@@ -46,7 +46,7 @@ func (l *filePtyLogger) GetUpstreamHook() auditor.Hook {
 }
 
 func (l *filePtyLogger) GetDownstreamHook() auditor.Hook {
-	return nil
+	return l.loggingDownstream
 }
 
 func init() {

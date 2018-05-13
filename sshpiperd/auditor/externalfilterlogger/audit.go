@@ -2,37 +2,69 @@ package externalfilterlogger
 
 import (
 	"bufio"
+	"encoding/binary"
 	"fmt"
 	"io"
 	"os"
 	"os/exec"
 	"path"
+	"strings"
 	"time"
 
 	"golang.org/x/crypto/ssh"
 )
 
 const (
-	msgChannelData = 94
+	msgChannelOpenConfirm = 91
+	msgChannelData        = 94
+	msgChannelClose       = 97
+	msgChannelRequest     = 98
 )
 
 type filePtyLogger struct {
-	typescript *os.File
-	timing     *os.File
+	initialized bool
+	outputdir   string
+	filterbin   string
+
+	typescript    *os.File
+	timing        *os.File
 	log           *os.File
 	filtercmd     *exec.Cmd
 	cmdStdinPipe  io.WriteCloser
 	cmdStdoutPipe io.ReadCloser
 	reader        io.Reader
 
-	oldtime time.Time
+	oldtime            time.Time
+	sshClientSessionId map[uint32]uint32
+	sshSessionPty      map[uint32]bool
 }
 
 func newFilePtyLogger(outputdir string, filterbin string) (*filePtyLogger, error) {
+	return &filePtyLogger{
+		initialized:        false,
+		outputdir:          outputdir,
+		filterbin:          filterbin,
+		typescript:         nil,
+		timing:             nil,
+		log:                nil,
+		filtercmd:          nil,
+		cmdStdinPipe:       nil,
+		cmdStdoutPipe:      nil,
+		reader:             nil,
+		oldtime:            time.Now(),
+		sshClientSessionId: make(map[uint32]uint32),
+		sshSessionPty:      make(map[uint32]bool),
+	}, nil
+}
+
+func (l *filePtyLogger) initialize() (*filePtyLogger, error) {
+	if l.initialized {
+		return nil, nil
+	}
 
 	now := time.Now()
 
-	cmd := exec.Command(filterbin)
+	cmd := exec.Command(l.filterbin)
 	cmd_stdout, _ := cmd.StdoutPipe()
 	cmd_stdin, _ := cmd.StdinPipe()
 	if err := cmd.Start(); err != nil {
@@ -43,19 +75,19 @@ func newFilePtyLogger(outputdir string, filterbin string) (*filePtyLogger, error
 
 	filename := fmt.Sprintf("%d", now.Unix())
 
-	typescript, err := os.OpenFile(path.Join(outputdir, fmt.Sprintf("%v.typescript", filename)), os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0600)
+	typescript, err := os.OpenFile(path.Join(l.outputdir, fmt.Sprintf("%v.typescript", filename)), os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0600)
 
 	if err != nil {
 		return nil, err
 	}
 
-	timing, err := os.OpenFile(path.Join(outputdir, fmt.Sprintf("%v.timing", filename)), os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0600)
+	timing, err := os.OpenFile(path.Join(l.outputdir, fmt.Sprintf("%v.timing", filename)), os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0600)
 
 	if err != nil {
 		return nil, err
 	}
 
-	log, err := os.OpenFile(path.Join(outputdir, fmt.Sprintf("%v.log", filename)), os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0600)
+	log, err := os.OpenFile(path.Join(l.outputdir, fmt.Sprintf("%v.log", filename)), os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0600)
 
 	if err != nil {
 		return nil, err
@@ -64,14 +96,14 @@ func newFilePtyLogger(outputdir string, filterbin string) (*filePtyLogger, error
 	go func() {
 		defer log.Close()
 		for {
-                        line, err := reader.ReadBytes('\n')
-                        if err != nil && err != io.EOF {
-                                fmt.Println(err.Error())
+			line, err := reader.ReadBytes('\n')
+			if err != nil && err != io.EOF && !strings.Contains(err.Error(), "file already closed") {
+				fmt.Println(err.Error())
 				break
-                        }
-                        if err == io.EOF && len(line) == 0{
-                                break
-                        }
+			}
+			if err == io.EOF && len(line) == 0 {
+				break
+			}
 			log.Write(line)
 		}
 	}()
@@ -88,21 +120,56 @@ func newFilePtyLogger(outputdir string, filterbin string) (*filePtyLogger, error
 		return nil, err
 	}
 
-	return &filePtyLogger{
-		typescript: typescript,
-		timing:     timing,
-		log:           log,
-		filtercmd:     cmd,
-		cmdStdinPipe:  cmd_stdin,
-		cmdStdoutPipe: cmd_stdout,
-		reader:        reader,
-		oldtime:    time.Now(),
-	}, nil
+	l.typescript = typescript
+	l.timing = timing
+	l.log = log
+	l.filtercmd = cmd
+	l.cmdStdinPipe = cmd_stdin
+	l.cmdStdoutPipe = cmd_stdout
+	l.reader = reader
+	l.oldtime = time.Now()
+	l.initialized = true
+	return nil, nil
+}
+
+func (l *filePtyLogger) loggingDownstream(conn ssh.ConnMetadata, msg []byte) ([]byte, error) {
+	if msg[0] == msgChannelRequest {
+		reqtype_length := binary.BigEndian.Uint32(msg[5:])
+		reqtype := string(msg[9 : 9+reqtype_length])
+		if reqtype == "pty-req" {
+			sessionServerId := binary.BigEndian.Uint32(msg[1:])
+			sessionClientId := l.sshClientSessionId[sessionServerId]
+			l.sshSessionPty[sessionClientId] = true
+
+			l.initialize()
+		}
+	}
+	if msg[0] == msgChannelClose {
+		sessionServerId := binary.BigEndian.Uint32(msg[1:])
+		if sessionClientId, ok := l.sshClientSessionId[sessionServerId]; ok {
+			delete(l.sshSessionPty, sessionClientId)
+			delete(l.sshClientSessionId, sessionServerId)
+		}
+	}
+	return msg, nil
 }
 
 func (l *filePtyLogger) loggingTty(conn ssh.ConnMetadata, msg []byte) ([]byte, error) {
 
+	if msg[0] == msgChannelOpenConfirm {
+		sessionServerId := binary.BigEndian.Uint32(msg[1:])
+		sessionClientId := binary.BigEndian.Uint32(msg[5:])
+		l.sshClientSessionId[sessionServerId] = sessionClientId
+	}
+
 	if msg[0] == msgChannelData {
+		if !l.initialized {
+			return msg, nil
+		}
+		sessionServerId := binary.BigEndian.Uint32(msg[1:])
+		if v, ok := l.sshSessionPty[sessionServerId]; !v || !ok {
+			return msg, nil
+		}
 
 		buf := msg[9:]
 
@@ -133,12 +200,15 @@ func (l *filePtyLogger) loggingTty(conn ssh.ConnMetadata, msg []byte) ([]byte, e
 }
 
 func (l *filePtyLogger) Close() (err error) {
-	_, err = l.typescript.Write([]byte(fmt.Sprintf("Script done on %v\n", time.Now().Format(time.ANSIC))))
-	_, err = l.cmdStdinPipe.Write([]byte(fmt.Sprintf("Script done on %v\n", time.Now().Format(time.ANSIC))))
+	if l.initialized {
+		_, err = l.typescript.Write([]byte(fmt.Sprintf("Script done on %v\n", time.Now().Format(time.ANSIC))))
+		_, err = l.cmdStdinPipe.Write([]byte(fmt.Sprintf("Script done on %v\n", time.Now().Format(time.ANSIC))))
 
-	l.typescript.Close()
-	l.timing.Close()
-        _ = l.filtercmd.Wait()
+		l.typescript.Close()
+		l.timing.Close()
+		l.cmdStdinPipe.Close()
+		_ = l.filtercmd.Wait()
+	}
 
 	return nil // TODO
 }
