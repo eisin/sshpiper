@@ -15,6 +15,7 @@ type plugin struct {
 		OutputDir string `long:"auditor-externalfilterlogger-outputdir" default:"/var/sshpiper" description:"Place where logged typescript files were saved"  env:"SSHPIPERD_AUDITOR_EXTERNALFILTERLOGGER_OUTPUTDIR"  ini-name:"auditor-typescriptlogger-outputdir"`
 		Filter string `long:"auditor-externalfilterlogger-bin" default:"cat" description:"Filter program to pass the log"  env:"SSHPIPERD_AUDITOR_TYPESCRIPTLOGGER_BIN"  ini-name:"auditor-typescriptlogger-bin"`
 	}
+	logger *log.Logger
 }
 
 func (p *plugin) GetName() string {
@@ -33,11 +34,11 @@ func (p *plugin) Create(conn ssh.ConnMetadata) (auditor.Auditor, error) {
 	}
 	filtercmd := p.Config.Filter
 
-	return newFilePtyLogger(dir, filtercmd)
+	return newFilePtyLogger(p.logger, dir, filtercmd)
 }
 
 func (p *plugin) Init(logger *log.Logger) error {
-
+	p.logger = logger
 	return nil
 }
 

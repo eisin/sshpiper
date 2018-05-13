@@ -5,6 +5,7 @@ import (
 	"encoding/binary"
 	"fmt"
 	"io"
+	"log"
 	"os"
 	"os/exec"
 	"path"
@@ -22,6 +23,7 @@ const (
 )
 
 type filePtyLogger struct {
+	logger      *log.Logger
 	initialized bool
 	outputdir   string
 	filterbin   string
@@ -39,8 +41,9 @@ type filePtyLogger struct {
 	sshSessionPty      map[uint32]bool
 }
 
-func newFilePtyLogger(outputdir string, filterbin string) (*filePtyLogger, error) {
+func newFilePtyLogger(logger *log.Logger, outputdir string, filterbin string) (*filePtyLogger, error) {
 	return &filePtyLogger{
+		logger:             logger,
 		initialized:        false,
 		outputdir:          outputdir,
 		filterbin:          filterbin,
@@ -64,15 +67,6 @@ func (l *filePtyLogger) initialize() (*filePtyLogger, error) {
 
 	now := time.Now()
 
-	cmd := exec.Command(l.filterbin)
-	cmd_stdout, _ := cmd.StdoutPipe()
-	cmd_stdin, _ := cmd.StdinPipe()
-	if err := cmd.Start(); err != nil {
-		return nil, err
-	}
-
-	reader := bufio.NewReader(cmd_stdout)
-
 	filename := fmt.Sprintf("%d", now.Unix())
 
 	typescript, err := os.OpenFile(path.Join(l.outputdir, fmt.Sprintf("%v.typescript", filename)), os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0600)
@@ -92,6 +86,16 @@ func (l *filePtyLogger) initialize() (*filePtyLogger, error) {
 	if err != nil {
 		return nil, err
 	}
+
+	cmd := exec.Command(l.filterbin)
+	cmd_stdout, _ := cmd.StdoutPipe()
+	cmd_stdin, _ := cmd.StdinPipe()
+	if err := cmd.Start(); err != nil {
+		//return nil, err
+		l.logger.Println(err.Error())
+	}
+
+	reader := bufio.NewReader(cmd_stdout)
 
 	go func() {
 		defer log.Close()
@@ -141,7 +145,9 @@ func (l *filePtyLogger) loggingDownstream(conn ssh.ConnMetadata, msg []byte) ([]
 			sessionClientId := l.sshClientSessionId[sessionServerId]
 			l.sshSessionPty[sessionClientId] = true
 
-			l.initialize()
+			if _, err := l.initialize(); err != nil {
+				l.logger.Println(err.Error())
+			}
 		}
 	}
 	if msg[0] == msgChannelClose {
@@ -190,8 +196,11 @@ func (l *filePtyLogger) loggingTty(conn ssh.ConnMetadata, msg []byte) ([]byte, e
 
 		_, err = l.cmdStdinPipe.Write(buf)
 
-		if err != nil {
-			return msg, err
+		if err != nil && strings.Contains(err.Error(), "file already closed") {
+			// do nothing
+		} else if err != nil {
+			l.logger.Println(err)
+			//return msg, err
 		}
 
 	}
