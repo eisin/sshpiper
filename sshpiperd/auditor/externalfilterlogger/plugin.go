@@ -13,7 +13,7 @@ import (
 type plugin struct {
 	Config struct {
 		OutputDir string `long:"auditor-externalfilterlogger-outputdir" default:"/var/sshpiper" description:"Place where logged typescript files were saved"  env:"SSHPIPERD_AUDITOR_EXTERNALFILTERLOGGER_OUTPUTDIR"  ini-name:"auditor-typescriptlogger-outputdir"`
-		Filter string `long:"auditor-externalfilterlogger-bin" default:"cat" description:"Filter program to pass the log"  env:"SSHPIPERD_AUDITOR_TYPESCRIPTLOGGER_BIN"  ini-name:"auditor-typescriptlogger-bin"`
+		Filter string `long:"auditor-externalfilterlogger-bin" default:"cat" description:"Filter program to pass the log"  env:"SSHPIPERD_AUDITOR_EXTERNALFILTERLOGGER_BIN"  ini-name:"auditor-externalfilterlogger-bin"`
 	}
 	logger *log.Logger
 }
