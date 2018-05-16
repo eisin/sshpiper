@@ -101,8 +101,10 @@ func (l *filePtyLogger) initialize() (*filePtyLogger, error) {
 		defer log.Close()
 		for {
 			line, err := reader.ReadBytes('\n')
-			if err != nil && err != io.EOF && !strings.Contains(err.Error(), "file already closed") {
-				fmt.Println(err.Error())
+			if err != nil && err != io.EOF {
+				if !strings.Contains(err.Error(), "file already closed") {
+					fmt.Println(err.Error())
+				}
 				break
 			}
 			if err == io.EOF && len(line) == 0 {
